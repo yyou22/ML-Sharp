@@ -2,34 +2,152 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <style> body { margin: 0; background: #000; } </style>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
-      }
+  <style>
+    body { margin: 0; background: #000; color: #fff; font-family: sans-serif; }
+
+    #picker {
+      position: fixed; inset: 0; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 20px; background: #111; z-index: 10;
     }
+    #picker h1 { margin: 0; font-size: 1.4rem; font-weight: 400; }
+    #pick-label {
+      cursor: pointer; padding: 12px 28px;
+      border: 2px solid #fff; border-radius: 8px; font-size: 1rem;
+    }
+    #pick-label:hover { background: rgba(255,255,255,0.1); }
+    #file-input { display: none; }
+
+    #open-btn {
+      position: fixed; top: 12px; left: 12px; z-index: 5; display: none;
+      background: rgba(0,0,0,0.6); border: 1px solid rgba(255,255,255,0.35);
+      color: #fff; font-size: 13px; padding: 5px 14px; border-radius: 6px; cursor: pointer;
+    }
+    #open-btn:hover { background: rgba(255,255,255,0.15); }
+
+    #hint {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      font: 13px/1.8 sans-serif; background: rgba(0,0,0,0.55);
+      padding: 6px 18px; border-radius: 8px; pointer-events: none;
+      white-space: nowrap; display: none;
+    }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
   </script>
 </head>
 <body>
+  <div id="picker">
+    <h1>Gaussian Splat Viewer</h1>
+    <label id="pick-label">
+      Open .ply / .splat file
+      <input type="file" id="file-input" accept=".ply,.splat">
+    </label>
+  </div>
+  <button id="open-btn">Open file</button>
+  <div id="hint">W/S — forward/back &nbsp;|&nbsp; A/D — strafe &nbsp;|&nbsp; Q/E — up/down &nbsp;|&nbsp; Mouse drag — look</div>
+
   <script type="module">
     import * as GaussianSplats3D from 'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js';
+    import * as THREE from 'three';
 
-    const viewer = new GaussianSplats3D.Viewer({
-      cameraUp: [0, -1, 0],
-      initialCameraPosition: [0, 0, -2],
-      initialCameraLookAt: [0, 0, 1],
+    const picker   = document.getElementById('picker');
+    const openBtn  = document.getElementById('open-btn');
+    const fileInput = document.getElementById('file-input');
+    const hint     = document.getElementById('hint');
+
+    let viewer  = null;
+    let cleanup = null;
+    let blobUrl = null;
+
+    fileInput.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (file) loadFile(file);
+      fileInput.value = '';
     });
 
-    viewer.addSplatScene('OneBack.ply', {
-      splatAlphaRemovalThreshold: 5,
-      showLoadingUI: true,
-      position: [0, 0, 0],
-      rotation: [0, 0, 0, 1],
-      scale: [1, 1, 1],
-    }).then(() => {
+    openBtn.addEventListener('click', () => fileInput.click());
+
+    async function loadFile(file) {
+      if (cleanup) { cleanup(); cleanup = null; }
+      if (viewer)  { try { viewer.dispose(); } catch (_) {} viewer = null; }
+      document.querySelectorAll('canvas').forEach(c => c.remove());
+      if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+
+      picker.style.display  = 'none';
+      hint.style.display    = 'block';
+      openBtn.style.display = 'block';
+
+      blobUrl = URL.createObjectURL(file);
+
+      const ext = file.name.split('.').pop().toLowerCase();
+      const format = ext === 'splat'
+        ? GaussianSplats3D.SceneFormat.Splat
+        : GaussianSplats3D.SceneFormat.Ply;
+
+      viewer = new GaussianSplats3D.Viewer({
+        cameraUp: [0, -1, 0],
+        initialCameraPosition: [0, 0, -2],
+        initialCameraLookAt: [0, 0, 1],
+      });
+
+      await viewer.addSplatScene(blobUrl, {
+        format,
+        splatAlphaRemovalThreshold: 5,
+        showLoadingUI: true,
+        position: [0, 0, 0],
+        rotation: [0, 0, 0, 1],
+        scale: [1, 1, 1],
+      });
+
       viewer.start();
-    });
+      cleanup = startNav(viewer);
+    }
+
+    function startNav(v) {
+      const camera   = v.camera;
+      const controls = v.controls;
+
+      const NAV  = new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
+      const keys = {};
+      const onDown = e => { if (NAV.has(e.code)) { keys[e.code] = true; e.preventDefault(); } };
+      const onUp   = e => { keys[e.code] = false; };
+      document.addEventListener('keydown', onDown);
+      document.addEventListener('keyup',   onUp);
+
+      const SPEED = 0.05;
+      const fwd   = new THREE.Vector3();
+      const right = new THREE.Vector3();
+      const move  = new THREE.Vector3();
+      let active  = true;
+
+      (function loop() {
+        if (!active || !camera || !controls) return;
+        requestAnimationFrame(loop);
+
+        camera.getWorldDirection(fwd);
+        right.crossVectors(fwd, camera.up).normalize();
+        move.set(0, 0, 0);
+
+        if (keys['KeyW'] || keys['ArrowUp'])    move.addScaledVector(fwd,    SPEED);
+        if (keys['KeyS'] || keys['ArrowDown'])  move.addScaledVector(fwd,   -SPEED);
+        if (keys['KeyA'] || keys['ArrowLeft'])  move.addScaledVector(right,  -SPEED);
+        if (keys['KeyD'] || keys['ArrowRight']) move.addScaledVector(right,   SPEED);
+        if (keys['KeyE']) move.addScaledVector(camera.up,  SPEED);
+        if (keys['KeyQ']) move.addScaledVector(camera.up, -SPEED);
+
+        if (move.lengthSq() > 0) {
+          camera.position.add(move);
+          controls.target.add(move);
+          controls.update();
+        }
+      })();
+
+      return () => {
+        active = false;
+        document.removeEventListener('keydown', onDown);
+        document.removeEventListener('keyup', onUp);
+      };
+    }
   </script>
 </body>
 </html>
