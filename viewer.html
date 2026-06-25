@@ -24,25 +24,31 @@
     }
     #open-btn:hover { background: rgba(255,255,255,0.15); }
 
-    #cine {
-      position: fixed; top: 12px; right: 12px; z-index: 5; display: none;
+    #panels {
+      position: fixed; top: 12px; right: 12px; z-index: 5;
+      display: none; flex-direction: column; gap: 12px;
+      max-height: calc(100vh - 24px); overflow-y: auto;
+    }
+    .panel {
       width: 210px; background: rgba(15,15,18,0.82); border: 1px solid rgba(255,255,255,0.18);
       border-radius: 10px; padding: 12px; font-size: 12px; backdrop-filter: blur(4px);
     }
-    #cine h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; opacity: 0.8; }
-    #cine .row { display: flex; gap: 6px; margin-bottom: 6px; }
-    #cine button {
+    .panel h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; opacity: 0.8; }
+    .panel .row { display: flex; gap: 6px; margin-bottom: 6px; }
+    .panel button {
       flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
       color: #fff; padding: 6px 4px; border-radius: 6px; cursor: pointer; font-size: 11px;
     }
-    #cine button:hover { background: rgba(255,255,255,0.18); }
-    #cine button.primary { background: #2d6cdf; border-color: #2d6cdf; }
-    #cine button.primary:hover { background: #3b7bf0; }
-    #cine button:disabled { opacity: 0.4; cursor: default; }
-    #cine label { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; opacity: 0.85; }
-    #cine input[type=number] { width: 52px; background: #000; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 2px 4px; }
-    #cine input[type=range] { width: 100px; }
-    #cine .status { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); opacity: 0.75; font-size: 11px; line-height: 1.5; }
+    .panel button:hover { background: rgba(255,255,255,0.18); }
+    .panel button.primary { background: #2d6cdf; border-color: #2d6cdf; }
+    .panel button.primary:hover { background: #3b7bf0; }
+    .panel button.active { background: #1f9d6b; border-color: #1f9d6b; }
+    .panel button:disabled { opacity: 0.4; cursor: default; }
+    .panel label { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; opacity: 0.85; }
+    .panel input[type=number] { width: 52px; background: #000; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 2px 4px; }
+    .panel input[type=range] { width: 96px; }
+    .panel .status { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); opacity: 0.75; font-size: 11px; line-height: 1.5; }
+    body.picking canvas { cursor: crosshair; }
 
     #hint {
       position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
@@ -65,7 +71,8 @@
   </div>
   <button id="open-btn">Open file</button>
 
-  <div id="cine">
+  <div id="panels">
+  <div id="cine" class="panel">
     <h2>CINEMATIC CAMERA</h2>
     <div class="row">
       <button id="c-add">+ Keyframe (K)</button>
@@ -83,6 +90,24 @@
     <div class="status" id="c-status">No keyframes yet.</div>
   </div>
 
+  <div id="water" class="panel">
+    <h2>WATER SIM</h2>
+    <div class="row">
+      <button id="w-pick" class="primary">Select water (click)</button>
+    </div>
+    <div class="row">
+      <button id="w-toggle" disabled>Animate</button>
+      <button id="w-clear" disabled>Clear</button>
+    </div>
+    <label>Amplitude <input id="w-amp"   type="range" min="0"   max="0.3" step="0.005" value="0.05"></label>
+    <label>Wave scale <input id="w-freq"  type="range" min="1"   max="30"  step="0.5"   value="8"></label>
+    <label>Speed <input id="w-speed" type="range" min="0.1" max="6"   step="0.1"   value="1.5"></label>
+    <label>Area <input id="w-radius" type="range" min="0.1" max="6"   step="0.1"   value="1.5"></label>
+    <label>Thickness <input id="w-thick" type="range" min="0.05" max="2" step="0.05"  value="0.4"></label>
+    <div class="status" id="w-status">Click "Select water", then click the water surface.</div>
+  </div>
+  </div>
+
   <div id="hint">W/S fwd/back · A/D strafe · Q/E up/down · drag look · K keyframe · Space play · O orbit</div>
 
   <script type="module">
@@ -93,7 +118,7 @@
     const openBtn   = document.getElementById('open-btn');
     const fileInput = document.getElementById('file-input');
     const hint      = document.getElementById('hint');
-    const cine      = document.getElementById('cine');
+    const panels    = document.getElementById('panels');
 
     const el = {
       add:    document.getElementById('c-add'),
@@ -104,6 +129,18 @@
       loop:   document.getElementById('c-loop'),
       ospeed: document.getElementById('c-ospeed'),
       status: document.getElementById('c-status'),
+    };
+
+    const w = {
+      pick:   document.getElementById('w-pick'),
+      toggle: document.getElementById('w-toggle'),
+      clear:  document.getElementById('w-clear'),
+      amp:    document.getElementById('w-amp'),
+      freq:   document.getElementById('w-freq'),
+      speed:  document.getElementById('w-speed'),
+      radius: document.getElementById('w-radius'),
+      thick:  document.getElementById('w-thick'),
+      status: document.getElementById('w-status'),
     };
 
     let viewer  = null;
@@ -126,7 +163,7 @@
       picker.style.display  = 'none';
       hint.style.display    = 'block';
       openBtn.style.display = 'block';
-      cine.style.display    = 'block';
+      panels.style.display  = 'flex';
 
       blobUrl = URL.createObjectURL(file);
 
@@ -246,6 +283,9 @@
       ];
       btn.forEach(([b, fn]) => b.addEventListener('click', fn));
 
+      // ---- water simulation (GPU vertex displacement) ----
+      const waterSim = setupWater(v);
+
       // ---- main loop ----
       let active = true;
       let last = performance.now();
@@ -255,6 +295,8 @@
         requestAnimationFrame(loop);
         const dt = Math.min((now - last) / 1000, 0.1);
         last = now;
+
+        waterSim.tick(dt);
 
         if (mode === 'free') {
           camera.getWorldDirection(fwd);
@@ -304,7 +346,189 @@
         document.removeEventListener('keydown', onDown);
         document.removeEventListener('keyup', onUp);
         btn.forEach(([b, fn]) => b.removeEventListener('click', fn));
+        waterSim.dispose();
       };
+
+      // ============ WATER ============
+      function setupWater(v) {
+        const splatMesh = v.splatMesh;
+        const raycaster = v.raycaster;
+        const dims = new THREE.Vector2();
+        const invWorld = new THREE.Matrix4();
+        const centerModel = new THREE.Vector3();
+
+        let patched = false;
+        let placed  = false;
+        let elapsed = 0;
+
+        const CENTER_DECL = 'vec3 splatCenter = uintBitsToFloat(uvec3(sampledCenterColor.gba));';
+
+        function tryPatch() {
+          const mat = splatMesh && splatMesh.material;
+          if (!mat || !mat.vertexShader) return false;
+          if (mat.userData.waterPatched) { patched = true; return true; }
+          // Only patch once both injection anchors are present verbatim, so we
+          // never inject a call to an undefined function and break the shader.
+          if (mat.vertexShader.indexOf(CENTER_DECL) < 0) return false;
+          if (mat.vertexShader.indexOf('void main') < 0) return false;
+
+          mat.uniforms.uWaterEnabled = { value: 0 };
+          mat.uniforms.uWaterTime    = { value: 0 };
+          mat.uniforms.uWaterCenter  = { value: new THREE.Vector3() };
+          mat.uniforms.uWaterRadius  = { value: parseFloat(w.radius.value) };
+          mat.uniforms.uWaterThick   = { value: parseFloat(w.thick.value) };
+          mat.uniforms.uWaterAmp     = { value: parseFloat(w.amp.value) };
+          mat.uniforms.uWaterFreq    = { value: parseFloat(w.freq.value) };
+          mat.uniforms.uWaterSpeed   = { value: parseFloat(w.speed.value) };
+
+          const decl = `
+uniform float uWaterEnabled, uWaterTime, uWaterRadius, uWaterThick, uWaterAmp, uWaterFreq, uWaterSpeed;
+uniform vec3 uWaterCenter;
+vec3 applyWater(vec3 c) {
+  if (uWaterEnabled < 0.5) return c;
+  vec3 d = c - uWaterCenter;
+  float my = 1.0 - smoothstep(uWaterThick * 0.6, uWaterThick, abs(d.y));
+  float mr = 1.0 - smoothstep(uWaterRadius * 0.7, uWaterRadius, length(d.xz));
+  float m = my * mr;
+  if (m <= 0.0) return c;
+  float t = uWaterTime * uWaterSpeed;
+  float wave = sin(c.x * uWaterFreq + t)
+             + sin(c.z * uWaterFreq * 0.8 + t * 1.3)
+             + 0.5 * sin((c.x + c.z) * uWaterFreq * 1.7 - t * 0.6);
+  c.y += uWaterAmp * wave * m;
+  c.x += uWaterAmp * 0.25 * m * sin(c.z * uWaterFreq + t);
+  return c;
+}
+`;
+          let vs = mat.vertexShader;
+          vs = vs.replace('void main', decl + '\nvoid main');
+          vs = vs.replace(CENTER_DECL, CENTER_DECL + '\n  splatCenter = applyWater(splatCenter);');
+          if (vs.indexOf('splatCenter = applyWater') < 0 || vs.indexOf('vec3 applyWater') < 0) {
+            return false; // anchors moved; leave shader untouched
+          }
+          mat.vertexShader = vs;
+          mat.needsUpdate = true;
+          mat.userData.waterPatched = true;
+          patched = true;
+          return true;
+        }
+
+        function u() { return splatMesh.material.uniforms; }
+
+        function setStatus(s) { w.status.textContent = s; }
+
+        function placeAt(worldPoint) {
+          if (!tryPatch()) { setStatus('Renderer not ready — try again in a moment.'); return; }
+          splatMesh.updateMatrixWorld(true);
+          invWorld.copy(splatMesh.matrixWorld).invert();
+          centerModel.copy(worldPoint).applyMatrix4(invWorld);
+          u().uWaterCenter.value.copy(centerModel);
+          u().uWaterEnabled.value = 1;
+          placed = true;
+          w.toggle.disabled = false;
+          w.clear.disabled  = false;
+          w.toggle.classList.add('active');
+          w.toggle.textContent = 'Pause';
+          animating = true;
+          setStatus('Water placed. Adjust sliders to taste.');
+        }
+
+        // pick a point by clicking the splats (with horizontal-plane fallback)
+        function onPickClick(ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          endPick();
+
+          v.getRenderDimensions(dims);
+          const rect = v.renderer.domElement.getBoundingClientRect();
+          const sp = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+          raycaster.setFromCameraAndScreenPosition(camera, sp, dims);
+
+          const hits = [];
+          try { raycaster.intersectSplatMesh(splatMesh, hits); } catch (_) {}
+
+          if (hits.length > 0) {
+            placeAt(hits[0].origin);
+          } else {
+            // fallback: intersect ray with horizontal plane through the orbit target
+            const ro = raycaster.ray.origin, rd = raycaster.ray.direction;
+            if (Math.abs(rd.y) > 1e-4) {
+              const tHit = (controls.target.y - ro.y) / rd.y;
+              if (tHit > 0) {
+                placeAt(new THREE.Vector3().copy(ro).addScaledVector(rd, tHit));
+                setStatus('No splat hit — placed on a flat plane. Re-pick for accuracy.');
+                return;
+              }
+            }
+            setStatus('Missed — click directly on the water surface.');
+          }
+        }
+
+        let picking = false;
+        function beginPick() {
+          if (picking) { endPick(); return; }
+          picking = true;
+          document.body.classList.add('picking');
+          controls.enabled = false;
+          w.pick.classList.add('active');
+          w.pick.textContent = 'Click the water…';
+          v.renderer.domElement.addEventListener('pointerdown', onPickClick, { capture: true, once: true });
+        }
+        function endPick() {
+          picking = false;
+          document.body.classList.remove('picking');
+          if (mode === 'free') controls.enabled = true;
+          w.pick.classList.remove('active');
+          w.pick.textContent = 'Select water (click)';
+        }
+
+        let animating = false;
+        function toggleAnim() {
+          if (!placed) return;
+          animating = !animating;
+          w.toggle.classList.toggle('active', animating);
+          w.toggle.textContent = animating ? 'Pause' : 'Animate';
+        }
+        function clearWater() {
+          if (!patched) return;
+          u().uWaterEnabled.value = 0;
+          placed = false; animating = false;
+          w.toggle.disabled = true; w.clear.disabled = true;
+          w.toggle.classList.remove('active');
+          w.toggle.textContent = 'Animate';
+          setStatus('Cleared. Click "Select water" to place again.');
+        }
+
+        const live = [
+          [w.amp, 'uWaterAmp'], [w.freq, 'uWaterFreq'], [w.speed, 'uWaterSpeed'],
+          [w.radius, 'uWaterRadius'], [w.thick, 'uWaterThick'],
+        ];
+        const onSlide = () => {
+          if (!patched) return;
+          for (const [input, name] of live) u()[name].value = parseFloat(input.value);
+        };
+        live.forEach(([input]) => input.addEventListener('input', onSlide));
+        w.pick.addEventListener('click', beginPick);
+        w.toggle.addEventListener('click', toggleAnim);
+        w.clear.addEventListener('click', clearWater);
+
+        return {
+          tick(dt) {
+            if (!patched) { tryPatch(); return; }
+            if (animating) {
+              elapsed += dt;
+              u().uWaterTime.value = elapsed;
+            }
+          },
+          dispose() {
+            endPick();
+            live.forEach(([input]) => input.removeEventListener('input', onSlide));
+            w.pick.removeEventListener('click', beginPick);
+            w.toggle.removeEventListener('click', toggleAnim);
+            w.clear.removeEventListener('click', clearWater);
+          },
+        };
+      }
     }
   </script>
 </body>
