@@ -24,9 +24,29 @@
     }
     #open-btn:hover { background: rgba(255,255,255,0.15); }
 
+    #cine {
+      position: fixed; top: 12px; right: 12px; z-index: 5; display: none;
+      width: 210px; background: rgba(15,15,18,0.82); border: 1px solid rgba(255,255,255,0.18);
+      border-radius: 10px; padding: 12px; font-size: 12px; backdrop-filter: blur(4px);
+    }
+    #cine h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; letter-spacing: 0.5px; opacity: 0.8; }
+    #cine .row { display: flex; gap: 6px; margin-bottom: 6px; }
+    #cine button {
+      flex: 1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2);
+      color: #fff; padding: 6px 4px; border-radius: 6px; cursor: pointer; font-size: 11px;
+    }
+    #cine button:hover { background: rgba(255,255,255,0.18); }
+    #cine button.primary { background: #2d6cdf; border-color: #2d6cdf; }
+    #cine button.primary:hover { background: #3b7bf0; }
+    #cine button:disabled { opacity: 0.4; cursor: default; }
+    #cine label { display: flex; align-items: center; justify-content: space-between; margin: 6px 0; opacity: 0.85; }
+    #cine input[type=number] { width: 52px; background: #000; color: #fff; border: 1px solid rgba(255,255,255,0.25); border-radius: 4px; padding: 2px 4px; }
+    #cine input[type=range] { width: 100px; }
+    #cine .status { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.12); opacity: 0.75; font-size: 11px; line-height: 1.5; }
+
     #hint {
       position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-      font: 13px/1.8 sans-serif; background: rgba(0,0,0,0.55);
+      font: 12px/1.7 sans-serif; background: rgba(0,0,0,0.55);
       padding: 6px 18px; border-radius: 8px; pointer-events: none;
       white-space: nowrap; display: none;
     }
@@ -44,16 +64,47 @@
     </label>
   </div>
   <button id="open-btn">Open file</button>
-  <div id="hint">W/S — forward/back &nbsp;|&nbsp; A/D — strafe &nbsp;|&nbsp; Q/E — up/down &nbsp;|&nbsp; Mouse drag — look</div>
+
+  <div id="cine">
+    <h2>CINEMATIC CAMERA</h2>
+    <div class="row">
+      <button id="c-add">+ Keyframe (K)</button>
+    </div>
+    <div class="row">
+      <button id="c-play" class="primary" disabled>Play (Space)</button>
+      <button id="c-clear" disabled>Clear (C)</button>
+    </div>
+    <div class="row">
+      <button id="c-orbit">Auto-Orbit (O)</button>
+    </div>
+    <label>Path duration <span><input id="c-dur" type="number" min="1" max="120" step="1" value="10"> s</span></label>
+    <label>Loop playback <input id="c-loop" type="checkbox"></label>
+    <label>Orbit speed <input id="c-ospeed" type="range" min="2" max="60" step="1" value="18"></label>
+    <div class="status" id="c-status">No keyframes yet.</div>
+  </div>
+
+  <div id="hint">W/S fwd/back · A/D strafe · Q/E up/down · drag look · K keyframe · Space play · O orbit</div>
 
   <script type="module">
     import * as GaussianSplats3D from 'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js';
     import * as THREE from 'three';
 
-    const picker   = document.getElementById('picker');
-    const openBtn  = document.getElementById('open-btn');
+    const picker    = document.getElementById('picker');
+    const openBtn   = document.getElementById('open-btn');
     const fileInput = document.getElementById('file-input');
-    const hint     = document.getElementById('hint');
+    const hint      = document.getElementById('hint');
+    const cine      = document.getElementById('cine');
+
+    const el = {
+      add:    document.getElementById('c-add'),
+      play:   document.getElementById('c-play'),
+      clear:  document.getElementById('c-clear'),
+      orbit:  document.getElementById('c-orbit'),
+      dur:    document.getElementById('c-dur'),
+      loop:   document.getElementById('c-loop'),
+      ospeed: document.getElementById('c-ospeed'),
+      status: document.getElementById('c-status'),
+    };
 
     let viewer  = null;
     let cleanup = null;
@@ -64,7 +115,6 @@
       if (file) loadFile(file);
       fileInput.value = '';
     });
-
     openBtn.addEventListener('click', () => fileInput.click());
 
     async function loadFile(file) {
@@ -76,6 +126,7 @@
       picker.style.display  = 'none';
       hint.style.display    = 'block';
       openBtn.style.display = 'block';
+      cine.style.display    = 'block';
 
       blobUrl = URL.createObjectURL(file);
 
@@ -103,49 +154,156 @@
       cleanup = startNav(viewer);
     }
 
+    const smooth = t => t * t * (3 - 2 * t); // ease in/out
+
     function startNav(v) {
       const camera   = v.camera;
       const controls = v.controls;
 
+      // ---- free-fly state ----
       const NAV  = new Set(['KeyW','KeyS','KeyA','KeyD','KeyQ','KeyE','ArrowUp','ArrowDown','ArrowLeft','ArrowRight']);
       const keys = {};
-      const onDown = e => { if (NAV.has(e.code)) { keys[e.code] = true; e.preventDefault(); } };
-      const onUp   = e => { keys[e.code] = false; };
+      const SPEED_PER_SEC = 3.0;
+      const fwd = new THREE.Vector3(), right = new THREE.Vector3(), move = new THREE.Vector3();
+
+      // ---- cinematic state ----
+      const keyframes = [];        // { pos: Vector3, target: Vector3 }
+      let posCurve = null, tgtCurve = null;
+      let mode = 'free';           // 'free' | 'path' | 'orbit'
+      let pathT = 0;               // 0..1 progress along path
+      const orbitAxis = new THREE.Vector3();
+      const offset = new THREE.Vector3();
+
+      function refreshUI() {
+        const n = keyframes.length;
+        el.play.disabled  = n < 2;
+        el.clear.disabled = n === 0;
+        el.play.textContent  = mode === 'path' ? 'Pause (Space)' : 'Play (Space)';
+        el.orbit.textContent = mode === 'orbit' ? 'Stop Orbit (O)' : 'Auto-Orbit (O)';
+        let s = n === 0 ? 'No keyframes yet.' : `${n} keyframe${n>1?'s':''} recorded.`;
+        if (mode === 'path')  s += `\nPlaying… ${(pathT*100)|0}%`;
+        if (mode === 'orbit') s += '\nOrbiting.';
+        el.status.textContent = s;
+      }
+
+      function addKeyframe() {
+        keyframes.push({ pos: camera.position.clone(), target: controls.target.clone() });
+        buildCurves();
+        refreshUI();
+      }
+
+      function clearKeyframes() {
+        keyframes.length = 0;
+        posCurve = tgtCurve = null;
+        if (mode === 'path') stopPlayback();
+        refreshUI();
+      }
+
+      function buildCurves() {
+        if (keyframes.length < 2) { posCurve = tgtCurve = null; return; }
+        posCurve = new THREE.CatmullRomCurve3(keyframes.map(k => k.pos), false, 'centripetal');
+        tgtCurve = new THREE.CatmullRomCurve3(keyframes.map(k => k.target), false, 'centripetal');
+      }
+
+      function startPlayback() {
+        if (keyframes.length < 2) return;
+        buildCurves();
+        pathT = 0;
+        mode = 'path';
+        controls.enabled = false;
+        refreshUI();
+      }
+      function stopPlayback() {
+        mode = 'free';
+        controls.enabled = true;
+        controls.update();
+        refreshUI();
+      }
+      function togglePlayback() { mode === 'path' ? stopPlayback() : startPlayback(); }
+
+      function toggleOrbit() {
+        if (mode === 'orbit') { mode = 'free'; controls.enabled = true; }
+        else { mode = 'orbit'; controls.enabled = false; }
+        refreshUI();
+      }
+
+      // ---- input ----
+      const onDown = e => {
+        if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+        if (NAV.has(e.code)) { keys[e.code] = true; e.preventDefault(); if (mode !== 'free') { stopPlayback(); if (mode==='orbit'){mode='free';controls.enabled=true;refreshUI();} } return; }
+        if (e.code === 'KeyK')  { addKeyframe(); e.preventDefault(); }
+        if (e.code === 'KeyC')  { clearKeyframes(); }
+        if (e.code === 'KeyO')  { toggleOrbit(); }
+        if (e.code === 'Space') { togglePlayback(); e.preventDefault(); }
+      };
+      const onUp = e => { keys[e.code] = false; };
       document.addEventListener('keydown', onDown);
-      document.addEventListener('keyup',   onUp);
+      document.addEventListener('keyup', onUp);
 
-      const SPEED = 0.05;
-      const fwd   = new THREE.Vector3();
-      const right = new THREE.Vector3();
-      const move  = new THREE.Vector3();
-      let active  = true;
+      const btn = [
+        [el.add, addKeyframe], [el.clear, clearKeyframes],
+        [el.play, togglePlayback], [el.orbit, toggleOrbit],
+      ];
+      btn.forEach(([b, fn]) => b.addEventListener('click', fn));
 
-      (function loop() {
-        if (!active || !camera || !controls) return;
+      // ---- main loop ----
+      let active = true;
+      let last = performance.now();
+
+      (function loop(now) {
+        if (!active) return;
         requestAnimationFrame(loop);
+        const dt = Math.min((now - last) / 1000, 0.1);
+        last = now;
 
-        camera.getWorldDirection(fwd);
-        right.crossVectors(fwd, camera.up).normalize();
-        move.set(0, 0, 0);
-
-        if (keys['KeyW'] || keys['ArrowUp'])    move.addScaledVector(fwd,    SPEED);
-        if (keys['KeyS'] || keys['ArrowDown'])  move.addScaledVector(fwd,   -SPEED);
-        if (keys['KeyA'] || keys['ArrowLeft'])  move.addScaledVector(right,  -SPEED);
-        if (keys['KeyD'] || keys['ArrowRight']) move.addScaledVector(right,   SPEED);
-        if (keys['KeyE']) move.addScaledVector(camera.up,  SPEED);
-        if (keys['KeyQ']) move.addScaledVector(camera.up, -SPEED);
-
-        if (move.lengthSq() > 0) {
-          camera.position.add(move);
-          controls.target.add(move);
-          controls.update();
+        if (mode === 'free') {
+          camera.getWorldDirection(fwd);
+          right.crossVectors(fwd, camera.up).normalize();
+          move.set(0, 0, 0);
+          const step = SPEED_PER_SEC * dt;
+          if (keys['KeyW'] || keys['ArrowUp'])    move.addScaledVector(fwd,    step);
+          if (keys['KeyS'] || keys['ArrowDown'])  move.addScaledVector(fwd,   -step);
+          if (keys['KeyA'] || keys['ArrowLeft'])  move.addScaledVector(right,  -step);
+          if (keys['KeyD'] || keys['ArrowRight']) move.addScaledVector(right,   step);
+          if (keys['KeyE']) move.addScaledVector(camera.up,  step);
+          if (keys['KeyQ']) move.addScaledVector(camera.up, -step);
+          if (move.lengthSq() > 0) {
+            camera.position.add(move);
+            controls.target.add(move);
+            controls.update();
+          }
         }
-      })();
+        else if (mode === 'path' && posCurve) {
+          const dur = Math.max(1, parseFloat(el.dur.value) || 10);
+          pathT += dt / dur;
+          if (pathT >= 1) {
+            if (el.loop.checked) { pathT %= 1; }
+            else { pathT = 1; }
+          }
+          const u = smooth(pathT);
+          posCurve.getPoint(u, camera.position);
+          tgtCurve.getPoint(u, controls.target);
+          camera.lookAt(controls.target);
+          if (pathT >= 1 && !el.loop.checked) stopPlayback();
+          else if ((performance.now() & 7) === 0) refreshUI();
+        }
+        else if (mode === 'orbit') {
+          const speed = (parseFloat(el.ospeed.value) || 18) * Math.PI / 180; // rad/sec
+          orbitAxis.copy(camera.up).normalize();
+          offset.copy(camera.position).sub(controls.target);
+          offset.applyAxisAngle(orbitAxis, speed * dt);
+          camera.position.copy(controls.target).add(offset);
+          camera.lookAt(controls.target);
+        }
+      })(last);
+
+      refreshUI();
 
       return () => {
         active = false;
         document.removeEventListener('keydown', onDown);
         document.removeEventListener('keyup', onUp);
+        btn.forEach(([b, fn]) => b.removeEventListener('click', fn));
       };
     }
   </script>
