@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style> body { margin: 0; background: #000; } </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script type="module">
+    import * as GaussianSplats3D from 'https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js';
+
+    const viewer = new GaussianSplats3D.Viewer({
+      cameraUp: [0, -1, 0],
+      initialCameraPosition: [0, 0, -2],
+      initialCameraLookAt: [0, 0, 1],
+    });
+
+    viewer.addSplatScene('OneBack.ply', {
+      splatAlphaRemovalThreshold: 5,
+      showLoadingUI: true,
+      position: [0, 0, 0],
+      rotation: [0, 0, 0, 1],
+      scale: [1, 1, 1],
+    }).then(() => {
+      viewer.start();
+    });
+  </script>
+</body>
+</html>
