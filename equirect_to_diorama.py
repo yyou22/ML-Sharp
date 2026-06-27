@@ -315,6 +315,42 @@ for (const name in FACES) {
   scene.add(new THREE.Mesh(g, m));
 }
 
+// --- cardboard thickness: a kraft-colored slab just behind each textured face,
+//     extruded outward, so the open front shows a rim and the box has edges ---
+const TH = __THICK__;
+if (TH > 0) {
+  const hx = DIMS[0], hy = DIMS[1], hz = DIMS[2], m = TH, eps = 0.002;
+  // slab axis-aligned bounds [xmin,xmax, ymin,ymax, zmin,zmax]; inner face sits
+  // just outside the textured plane (eps) so it never z-fights with the texture.
+  const SLABS = {
+    backdrop:   [-hx - m, hx + m,  -hy - m, hy + m,  -hz - TH, -hz - eps],
+    wall_left:  [ hx + eps, hx + TH, -hy - m, hy + m,  -hz - TH, hz],
+    wall_right: [-hx - TH, -hx - eps, -hy - m, hy + m, -hz - TH, hz],
+    ceiling:    [-hx - m, hx + m,   hy + eps, hy + TH, -hz - TH, hz],
+    floor:      [-hx - m, hx + m,  -hy - TH, -hy - eps, -hz - TH, hz],
+  };
+  // cardboard shading is baked into vertex colors (per box-face, from the face
+  // normal) so it needs no lights and looks identical regardless of renderer.
+  const cardMat = new THREE.MeshBasicMaterial({vertexColors: true, side: THREE.DoubleSide});
+  const LDIR = new THREE.Vector3(2, 4, 3).normalize();
+  const base = new THREE.Color(0xc2a878);
+  for (const name in SLABS) {
+    const b = SLABS[name];
+    const geo = new THREE.BoxGeometry(b[1] - b[0], b[3] - b[2], b[5] - b[4]);
+    const nrm = geo.attributes.normal;
+    const col = new Float32Array(nrm.count * 3);
+    for (let i = 0; i < nrm.count; i++) {
+      const d = Math.max(0, nrm.getX(i) * LDIR.x + nrm.getY(i) * LDIR.y + nrm.getZ(i) * LDIR.z);
+      const s = 0.45 + 0.55 * d;
+      col[i * 3] = base.r * s; col[i * 3 + 1] = base.g * s; col[i * 3 + 2] = base.b * s;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const mesh = new THREE.Mesh(geo, cardMat);
+    mesh.position.set((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2);
+    scene.add(mesh);
+  }
+}
+
 document.getElementById('reset').onclick = () => {
   camera.position.copy(CAM0); aimFromTarget(TGT0); applyLook();
 };
@@ -378,7 +414,7 @@ def _water_mask_uri(arr, full=False):
 
 def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0),
                  water_faces=("floor", "backdrop", "wall_left", "wall_right"),
-                 water_amp=0.014):
+                 water_amp=0.014, thickness=0.08):
     """Write a self-contained interactive WebGL viewer of the assembled box.
 
     The 5 panels are embedded as base64 PNGs (so the file opens by double-click,
@@ -414,7 +450,8 @@ def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0),
             .replace("__DIMS__", json.dumps([hx, hy, hz]))
             .replace("__WATER__", json.dumps(water))
             .replace("__MASK__", json.dumps(mask))
-            .replace("__WAMP__", repr(float(water_amp))))
+            .replace("__WAMP__", repr(float(water_amp)))
+            .replace("__THICK__", repr(float(thickness))))
     with open(out_path, "w") as f:
         f.write(html)
     return out_path
@@ -495,6 +532,9 @@ def main():
     ap.add_argument("--water-amp", type=float, default=0.014, metavar="FRAC",
                     help="water ripple amplitude as a fraction of the panel "
                          "(default: 0.014).")
+    ap.add_argument("--thickness", type=float, default=0.08, metavar="UNITS",
+                    help="cardboard wall thickness for --viewer, in box units "
+                         "(default: 0.08). 0 = thin planes (no cardboard edges).")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -528,7 +568,7 @@ def main():
     if args.viewer:
         viewer_path = build_viewer(panels, os.path.join(args.outdir, "box_viewer.html"),
                                    dims=args.dims, water_faces=args.water_faces,
-                                   water_amp=args.water_amp)
+                                   water_amp=args.water_amp, thickness=args.thickness)
 
     # --- report the resolved mapping so it can be sanity-checked ---
     print(f"\npy360convert version : {getattr(py360convert, '__version__', '?')}")
