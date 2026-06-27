@@ -349,6 +349,75 @@ if (TH > 0) {
     mesh.position.set((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2);
     scene.add(mesh);
   }
+
+  // --- corrugated cardboard edge on the open-front rim: real 3-D fluting
+  //     (a row of little arches) sandwiched between two smooth liner strips,
+  //     baked-shaded so the ridges catch light like the slabs do ---
+  const RIM_L = new THREE.Vector3(2, 4, 3).normalize();
+  const KRAFT = new THREE.Color(0xccb487);
+  const rimMat = new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.DoubleSide,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  // lambert-ish shade from a normal, same model the slabs use, times a tint
+  const litRim = (nx, ny, nz, tint) => {
+    const d = Math.max(0, nx * RIM_L.x + ny * RIM_L.y + nz * RIM_L.z);
+    const s = (0.40 + 0.60 * d) * tint;
+    return [KRAFT.r * s, KRAFT.g * s, KRAFT.b * s];
+  };
+  // build one rim band: u runs along the edge, v spans the thin thickness,
+  // flutes bulge toward +z. uAxis/vAxis are 0 (x) or 1 (y); 3rd coord is z.
+  function buildRim(uMin, uMax, uAxis, vMin, vMax, vAxis) {
+    const len = uMax - uMin, band = vMax - vMin;
+    const lin = band * 0.16;                      // liner strip width each side
+    const cMin = vMin + lin, cMax = vMax - lin;   // corrugation spans the middle
+    const flutes = Math.max(4, Math.round(len / 0.065));
+    const segs = flutes * 8;
+    const A = Math.min(0.028, band * 0.45);       // how far the flutes bulge out
+    const z0 = hz + 0.002;
+    const pos = [], col = [], idx = [];
+    const vert = (u, v, z, n, tint) => {
+      const p = [0, 0, 0]; p[uAxis] = u; p[vAxis] = v; p[2] = z;
+      pos.push(p[0], p[1], p[2]);
+      const c = litRim(n[0], n[1], n[2], tint); col.push(c[0], c[1], c[2]);
+      return pos.length / 3 - 1;
+    };
+    // corrugated middle: two rows (cMin/cMax) riding a row of arches along u
+    const dth = flutes * 2 * Math.PI / len;
+    let pa = -1, pb = -1;
+    for (let i = 0; i <= segs; i++) {
+      const u = uMin + len * (i / segs);
+      const th = (u - uMin) * dth;
+      const h = 0.5 * (1 - Math.cos(th));         // 0..1 arch height
+      const z = z0 + A * h;
+      const slope = A * 0.5 * Math.sin(th) * dth; // dz/du -> tilts the normal
+      const n = [0, 0, 0]; n[uAxis] = -slope; n[2] = 1;
+      const L = Math.hypot(n[0], n[1], n[2]); n[0] /= L; n[1] /= L; n[2] /= L;
+      const tint = 0.78 + 0.22 * h;               // crests a touch brighter
+      const a = vert(u, cMin, z, n, tint), b = vert(u, cMax, z, n, tint);
+      if (i > 0) idx.push(pa, pb, a, pb, b, a);
+      pa = a; pb = b;
+    }
+    // two smooth liner strips, flat and flush with the flute crests
+    const up = [0, 0, 1];
+    const strip = (va, vb) => {
+      const z = z0 + A;
+      const q0 = vert(uMin, va, z, up, 1.16), q1 = vert(uMin, vb, z, up, 1.16);
+      const q2 = vert(uMax, va, z, up, 1.16), q3 = vert(uMax, vb, z, up, 1.16);
+      idx.push(q0, q1, q2, q1, q3, q2);
+    };
+    strip(vMin, cMin); strip(cMax, vMax);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    const mesh = new THREE.Mesh(g, rimMat); mesh.renderOrder = 10;
+    scene.add(mesh);
+  }
+  buildRim(-hy - m, hy + m, 1,  hx + eps, hx + TH,  0);   // wall_left  rim
+  buildRim(-hy - m, hy + m, 1, -hx - TH, -hx - eps,  0);  // wall_right rim
+  buildRim(-hx - m, hx + m, 0,  hy + eps, hy + TH,  1);   // ceiling    rim
+  buildRim(-hx - m, hx + m, 0, -hy - TH, -hy - eps,  1);  // floor      rim
 }
 
 document.getElementById('reset').onclick = () => {
@@ -414,7 +483,7 @@ def _water_mask_uri(arr, full=False):
 
 def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0),
                  water_faces=("floor", "backdrop", "wall_left", "wall_right"),
-                 water_amp=0.014, thickness=0.08):
+                 water_amp=0.014, thickness=0.045):
     """Write a self-contained interactive WebGL viewer of the assembled box.
 
     The 5 panels are embedded as base64 PNGs (so the file opens by double-click,
@@ -532,9 +601,9 @@ def main():
     ap.add_argument("--water-amp", type=float, default=0.014, metavar="FRAC",
                     help="water ripple amplitude as a fraction of the panel "
                          "(default: 0.014).")
-    ap.add_argument("--thickness", type=float, default=0.08, metavar="UNITS",
+    ap.add_argument("--thickness", type=float, default=0.045, metavar="UNITS",
                     help="cardboard wall thickness for --viewer, in box units "
-                         "(default: 0.08). 0 = thin planes (no cardboard edges).")
+                         "(default: 0.045). 0 = thin planes (no cardboard edges).")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
