@@ -47,7 +47,7 @@ import os
 import sys
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 try:
     import py360convert
@@ -266,6 +266,36 @@ const keys = {};
 addEventListener('keydown', e => { keys[e.code] = true; });
 addEventListener('keyup',   e => { keys[e.code] = false; });
 
+// faces flagged as water get an animated ripple: the texture-sample UVs are
+// displaced by moving sine waves and the GPU bilinearly interpolates the
+// resample, so the still image reads as a rippling surface. onBeforeCompile is
+// used so three.js keeps doing its normal sRGB texture decode.
+const WATER = new Set(__WATER__);
+const MASK = __MASK__;              // per-face grayscale "where is water" textures
+const waterU = { value: 0 };
+function makeWater(mat, maskTex) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = waterU;
+    shader.uniforms.uMask = { value: maskTex };
+    shader.fragmentShader = 'uniform float uTime;\\nuniform sampler2D uMask;\\n' +
+      shader.fragmentShader.replace(
+      '#include <map_fragment>',
+      `#ifdef USE_MAP
+        float TAU = 6.2831853;
+        vec2 _uv = vMapUv;
+        float wm = texture2D(uMask, vMapUv).r;   // 0..1 wet-ness
+        float t = uTime;
+        vec2 off;
+        off.x = sin(TAU*6.0*_uv.y + t) + 0.5*sin(TAU*7.7*(_uv.x+_uv.y) + 2.0*t);
+        off.y = cos(TAU*6.0*_uv.x - t) + 0.5*cos(TAU*6.6*(_uv.x-_uv.y) - 2.0*t);
+        _uv += float(__WAMP__) * off * wm;       // ripple only where wet
+        vec4 sampledDiffuseColor = texture2D( map, _uv );
+        diffuseColor *= sampledDiffuseColor;
+      #endif`);
+  };
+  return mat;
+}
+
 const loader = new THREE.TextureLoader();
 for (const name in FACES) {
   const c = FACES[name];
@@ -276,7 +306,12 @@ for (const name in FACES) {
   g.setIndex(IDX);
   const t = loader.load(TEX[name]);
   t.colorSpace = THREE.SRGBColorSpace;
-  const m = new THREE.MeshBasicMaterial({map: t, side: THREE.DoubleSide});
+  let m = new THREE.MeshBasicMaterial({map: t, side: THREE.DoubleSide});
+  if (WATER.has(name)) {
+    const mk = loader.load(MASK[name]);
+    mk.colorSpace = THREE.NoColorSpace;
+    m = makeWater(m, mk);
+  }
   scene.add(new THREE.Mesh(g, m));
 }
 
@@ -289,9 +324,11 @@ addEventListener('resize', () => {
 });
 
 const clock = new THREE.Clock();
+let simTime = 0;
 (function loop(){
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
+  simTime += dt; waterU.value = simTime * 1.8;
   const fwd = forwardVec();
   const right = new THREE.Vector3().crossVectors(fwd, WORLD_UP).normalize();
   const speed = ((keys['ShiftLeft'] || keys['ShiftRight']) ? 4.5 : 1.8) * dt;
@@ -318,14 +355,38 @@ def _png_data_uri(arr):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0)):
+def _water_mask_uri(arr, full=False):
+    """Grayscale mask (white = water) for where a panel should ripple.
+
+    full=True marks the whole panel as water (the floor). Otherwise water is
+    detected by teal/green dominance ((G+B)/2 - R), softly thresholded and
+    blurred so the ripple fades out at the waterline instead of cutting hard.
+    """
+    h, w = arr.shape[:2]
+    if full:
+        mask = Image.new("L", (w, h), 255)
+    else:
+        a = arr.astype(np.float32)
+        teal = (a[..., 1] + a[..., 2]) / 2 - a[..., 0]
+        m = np.clip((teal + 4.0) / 12.0, 0, 1)
+        mask = Image.fromarray((m * 255).astype(np.uint8), "L")
+        mask = mask.filter(ImageFilter.GaussianBlur(max(1.0, w / 120.0)))
+    buf = io.BytesIO()
+    mask.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0),
+                 water_faces=("floor", "backdrop", "wall_left", "wall_right"),
+                 water_amp=0.014):
     """Write a self-contained interactive WebGL viewer of the assembled box.
 
     The 5 panels are embedded as base64 PNGs (so the file opens by double-click,
     no server needed) and mapped onto the box with the same verified corner/uv
     parametrization as render_box(). dims are the box half-extents (hx,hy,hz);
-    non-equal values give a rectangular box. Needs internet once to pull
-    three.js from a CDN. First-person fly controls (WASD/QE/drag).
+    non-equal values give a rectangular box. Faces named in water_faces get an
+    animated ripple (UV-displacement resampled by GPU interpolation). Needs
+    internet once to pull three.js from a CDN. Fly controls (WASD/QE/drag).
     """
     hx, hy, hz = (float(d) for d in dims)
     tex = {
@@ -343,10 +404,17 @@ def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0)):
         "ceiling":    [[hx, hy, hz], [-hx, hy, hz], [-hx, hy, -hz], [hx, hy, -hz]],
         "floor":      [[hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, hz], [hx, -hy, hz]],
     }
+    water = list(water_faces)  # names match FACES keys: backdrop/wall_left/wall_right/ceiling/floor
+    # soft per-face water mask so each panel ripples only where it's wet
+    mask = {name: _water_mask_uri(panels[name + ".png"], full=(name == "floor"))
+            for name in water}
     html = (_VIEWER_TEMPLATE
             .replace("__TEX__", json.dumps(tex))
             .replace("__FACES__", json.dumps(faces))
-            .replace("__DIMS__", json.dumps([hx, hy, hz])))
+            .replace("__DIMS__", json.dumps([hx, hy, hz]))
+            .replace("__WATER__", json.dumps(water))
+            .replace("__MASK__", json.dumps(mask))
+            .replace("__WAMP__", repr(float(water_amp))))
     with open(out_path, "w") as f:
         f.write(html)
     return out_path
@@ -416,6 +484,17 @@ def main():
                          "0 (default) = the panorama's horizontal CENTER faces the "
                          "backdrop; +/-90 = a side; 180 = the panorama's wrap-seam "
                          "edges (py360convert's raw orientation).")
+    ap.add_argument("--water-faces", nargs="*",
+                    default=["floor", "backdrop", "wall_left", "wall_right"],
+                    metavar="FACE",
+                    help="which faces ripple as animated water in --viewer (any of: "
+                         "backdrop wall_left wall_right ceiling floor). Each ripples "
+                         "only where water is detected (floor = entirely). Default: "
+                         "floor backdrop wall_left wall_right. Pass with no names to "
+                         "disable.")
+    ap.add_argument("--water-amp", type=float, default=0.014, metavar="FRAC",
+                    help="water ripple amplitude as a fraction of the panel "
+                         "(default: 0.014).")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -448,7 +527,8 @@ def main():
     viewer_path = None
     if args.viewer:
         viewer_path = build_viewer(panels, os.path.join(args.outdir, "box_viewer.html"),
-                                   dims=args.dims)
+                                   dims=args.dims, water_faces=args.water_faces,
+                                   water_amp=args.water_amp)
 
     # --- report the resolved mapping so it can be sanity-checked ---
     print(f"\npy360convert version : {getattr(py360convert, '__version__', '?')}")
@@ -471,6 +551,8 @@ def main():
     if box_path:
         print(f"box 3D preview       : {os.path.abspath(box_path)}")
     if viewer_path:
+        water = ", ".join(args.water_faces) if args.water_faces else "(none)"
+        print(f"animated water faces : {water}")
         print(f"interactive viewer   : {os.path.abspath(viewer_path)}")
 
 
