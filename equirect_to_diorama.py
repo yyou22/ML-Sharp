@@ -122,21 +122,24 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def render_box(panels, out_path, width=900, height=700,
-               cam=(0.6, 0.5, 2.5), target=(0.0, -0.05, -0.4), fov_deg=52,
-               bg=(12, 12, 15)):
+def render_box(panels, out_path, dims=(1.0, 1.0, 1.0), width=900, height=700,
+               fov_deg=52, bg=(12, 12, 15)):
     """Render a 3D perspective view of the assembled open diorama box.
 
-    The box occupies [-1,1]^3 with the backdrop at z=-1 and the front (z=+1)
-    open -- the camera sits just outside the opening and looks in, so you see
-    the interior the way the paper-theater viewer would. Each wall's (u,v)->xyz
+    The box occupies [-hx,hx] x [-hy,hy] x [-hz,hz] (dims = the half-extents in
+    x,y,z), with the backdrop at z=-hz and the front (z=+hz) open. The camera
+    sits just outside the opening and looks in, so you see the interior the way
+    the paper-theater viewer would. Non-equal dims give a rectangular box (the
+    square cube faces get stretched onto the walls). Each wall's (u,v)->xyz
     parametrization is taken straight from the verified continuous net, so a
     correct set of panels produces seamless tile/horizon lines across corners.
 
     This is a tiny inverse ray-caster (5 axis-aligned quads), no 3D dependency.
     """
-    cam = np.asarray(cam, float)
-    fwd = np.asarray(target, float) - cam
+    hx, hy, hz = (float(d) for d in dims)
+    cam = np.array([0.6 * hx, 0.5 * hy, hz + 1.5], float)
+    target = np.array([0.0, -0.05 * hy, -0.4 * hz], float)
+    fwd = target - cam
     fwd /= np.linalg.norm(fwd)
     right = np.cross(fwd, (0.0, 1.0, 0.0)); right /= np.linalg.norm(right)
     up = np.cross(right, fwd)
@@ -151,12 +154,13 @@ def render_box(panels, out_path, width=900, height=700,
 
     # (constant-axis, plane value, (u,v) from hit point, panel) per interior face
     quads = [
-        (2, -1.0, lambda h: ((1 - h[..., 0]) / 2, (1 - h[..., 1]) / 2), panels["backdrop.png"]),
-        (0,  1.0, lambda h: ((1 - h[..., 2]) / 2, (1 - h[..., 1]) / 2), panels["wall_left.png"]),
-        (0, -1.0, lambda h: ((h[..., 2] + 1) / 2, (1 - h[..., 1]) / 2), panels["wall_right.png"]),
-        (1,  1.0, lambda h: ((1 - h[..., 0]) / 2, (1 - h[..., 2]) / 2), panels["ceiling.png"]),
-        (1, -1.0, lambda h: ((1 - h[..., 0]) / 2, (h[..., 2] + 1) / 2), panels["floor.png"]),
+        (2, -hz, lambda h: ((hx - h[..., 0]) / (2 * hx), (hy - h[..., 1]) / (2 * hy)), panels["backdrop.png"]),
+        (0,  hx, lambda h: ((hz - h[..., 2]) / (2 * hz), (hy - h[..., 1]) / (2 * hy)), panels["wall_left.png"]),
+        (0, -hx, lambda h: ((h[..., 2] + hz) / (2 * hz), (hy - h[..., 1]) / (2 * hy)), panels["wall_right.png"]),
+        (1,  hy, lambda h: ((hx - h[..., 0]) / (2 * hx), (hz - h[..., 2]) / (2 * hz)), panels["ceiling.png"]),
+        (1, -hy, lambda h: ((hx - h[..., 0]) / (2 * hx), (h[..., 2] + hz) / (2 * hz)), panels["floor.png"]),
     ]
+    bound = {0: hx, 1: hy, 2: hz}
 
     img = np.empty((height, width, 3), np.uint8); img[:] = bg
     best = np.full((height, width), np.inf)
@@ -166,7 +170,8 @@ def render_box(panels, out_path, width=900, height=700,
         hit = cam + t[..., None] * dirs
         inb = t > 1e-4
         for a in (a for a in (0, 1, 2) if a != axis):
-            inb &= (hit[..., a] >= -1.0001) & (hit[..., a] <= 1.0001)
+            lim = bound[a] * 1.0001
+            inb &= (hit[..., a] >= -lim) & (hit[..., a] <= lim)
         sel = inb & (t < best)
         if sel.any():
             u, v = uv_fn(hit)
@@ -210,13 +215,15 @@ import * as THREE from 'three';
 
 const TEX = __TEX__;
 const FACES = __FACES__;            // 4 corners each, order c00,c10,c11,c01
+const DIMS = __DIMS__;              // box half-extents [hx, hy, hz]
 const UV  = new Float32Array([0,1, 1,1, 1,0, 0,0]);
 const IDX = [0,1,2, 0,2,3];
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0e0e12);
 const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 100);
-const CAM0 = new THREE.Vector3(1.7, 1.05, 3.7), TGT0 = new THREE.Vector3(0,0,-0.2);
+const CAM0 = new THREE.Vector3(0.85 * DIMS[0], 0.7 * DIMS[1], DIMS[2] + 2.7);
+const TGT0 = new THREE.Vector3(0, 0, -0.2 * DIMS[2]);
 camera.position.copy(CAM0);
 
 const renderer = new THREE.WebGLRenderer({antialias:true});
@@ -311,14 +318,16 @@ def _png_data_uri(arr):
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def build_viewer(panels, out_path):
+def build_viewer(panels, out_path, dims=(1.0, 1.0, 1.0)):
     """Write a self-contained interactive WebGL viewer of the assembled box.
 
     The 5 panels are embedded as base64 PNGs (so the file opens by double-click,
     no server needed) and mapped onto the box with the same verified corner/uv
-    parametrization as render_box(). Needs internet once to pull three.js from a
-    CDN. Orbit / zoom / pan with the mouse.
+    parametrization as render_box(). dims are the box half-extents (hx,hy,hz);
+    non-equal values give a rectangular box. Needs internet once to pull
+    three.js from a CDN. First-person fly controls (WASD/QE/drag).
     """
+    hx, hy, hz = (float(d) for d in dims)
     tex = {
         "backdrop":   _png_data_uri(panels["backdrop.png"]),
         "wall_left":  _png_data_uri(panels["wall_left.png"]),
@@ -326,17 +335,18 @@ def build_viewer(panels, out_path):
         "ceiling":    _png_data_uri(panels["ceiling.png"]),
         "floor":      _png_data_uri(panels["floor.png"]),
     }
-    # corners c00,c10,c11,c01 (matches (u,v)->xyz used by render_box)
+    # corners c00,c10,c11,c01 (matches (u,v)->xyz used by render_box), scaled to dims
     faces = {
-        "backdrop":   [[1, 1, -1], [-1, 1, -1], [-1, -1, -1], [1, -1, -1]],
-        "wall_left":  [[1, 1, 1], [1, 1, -1], [1, -1, -1], [1, -1, 1]],
-        "wall_right": [[-1, 1, -1], [-1, 1, 1], [-1, -1, 1], [-1, -1, -1]],
-        "ceiling":    [[1, 1, 1], [-1, 1, 1], [-1, 1, -1], [1, 1, -1]],
-        "floor":      [[1, -1, -1], [-1, -1, -1], [-1, -1, 1], [1, -1, 1]],
+        "backdrop":   [[hx, hy, -hz], [-hx, hy, -hz], [-hx, -hy, -hz], [hx, -hy, -hz]],
+        "wall_left":  [[hx, hy, hz], [hx, hy, -hz], [hx, -hy, -hz], [hx, -hy, hz]],
+        "wall_right": [[-hx, hy, -hz], [-hx, hy, hz], [-hx, -hy, hz], [-hx, -hy, -hz]],
+        "ceiling":    [[hx, hy, hz], [-hx, hy, hz], [-hx, hy, -hz], [hx, hy, -hz]],
+        "floor":      [[hx, -hy, -hz], [-hx, -hy, -hz], [-hx, -hy, hz], [hx, -hy, hz]],
     }
     html = (_VIEWER_TEMPLATE
             .replace("__TEX__", json.dumps(tex))
-            .replace("__FACES__", json.dumps(faces)))
+            .replace("__FACES__", json.dumps(faces))
+            .replace("__DIMS__", json.dumps([hx, hy, hz])))
     with open(out_path, "w") as f:
         f.write(html)
     return out_path
@@ -395,12 +405,31 @@ def main():
                          "the assembled open diorama box")
     ap.add_argument("--viewer", action="store_true",
                     help="also write box_viewer.html, a self-contained interactive "
-                         "WebGL viewer (orbit/zoom/pan the assembled box)")
+                         "WebGL viewer (WASD/QE fly through the assembled box)")
+    ap.add_argument("--dims", nargs=3, type=float, metavar=("HX", "HY", "HZ"),
+                    default=[1.5, 1.0, 1.2],
+                    help="box half-extents (width, height, depth) for --box/--viewer. "
+                         "Non-equal values make a rectangular box; cube faces get "
+                         "stretched. Default: 1.5 1.0 1.2. Use 1 1 1 for a cube.")
+    ap.add_argument("--yaw", type=float, default=0.0, metavar="DEG",
+                    help="which direction in the panorama becomes the backdrop. "
+                         "0 (default) = the panorama's horizontal CENTER faces the "
+                         "backdrop; +/-90 = a side; 180 = the panorama's wrap-seam "
+                         "edges (py360convert's raw orientation).")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
 
     equirect = load_equirect(args.panorama)
+    # Put the chosen panorama direction on the backdrop. The Back cube face samples
+    # the equirect's seam (yaw 180 from image center), so by default we roll the
+    # image 180 deg -- a lossless horizontal wrap-around -- to bring the panorama's
+    # CENTER onto the backdrop. --yaw adds an extra offset on top of that.
+    w = equirect.shape[1]
+    shift = int(round(-(0.5 + args.yaw / 360.0) * w)) % w
+    if shift:
+        equirect = np.roll(equirect, shift, axis=1)
+
     faces = equirect_to_faces(equirect, args.face_size)
     panels = build_panels(faces)
 
@@ -413,16 +442,20 @@ def main():
 
     box_path = None
     if args.box:
-        box_path = render_box(panels, os.path.join(args.outdir, "box_preview.png"))
+        box_path = render_box(panels, os.path.join(args.outdir, "box_preview.png"),
+                              dims=args.dims)
 
     viewer_path = None
     if args.viewer:
-        viewer_path = build_viewer(panels, os.path.join(args.outdir, "box_viewer.html"))
+        viewer_path = build_viewer(panels, os.path.join(args.outdir, "box_viewer.html"),
+                                   dims=args.dims)
 
     # --- report the resolved mapping so it can be sanity-checked ---
     print(f"\npy360convert version : {getattr(py360convert, '__version__', '?')}")
     print(f"e2c cube_format      : 'dict'  (returned keys: {sorted(faces.keys())})")
     print(f"face_size            : {args.face_size}px")
+    backdrop_src = "panorama center" if args.yaw == 0 else f"panorama center +{args.yaw} deg"
+    print(f"backdrop direction   : yaw={args.yaw} deg  ({backdrop_src})")
     print(f"output directory     : {os.path.abspath(args.outdir)}")
     print("\nresolved panel mapping (output file <- py360 face [transform] : note):")
     for fname, (key, transform, desc) in PANEL_MAP.items():
@@ -431,6 +464,10 @@ def main():
     print("  (front face skipped -- it's the open side the viewer looks through)")
     if preview_path:
         print(f"\npreview contact sheet: {os.path.abspath(preview_path)}")
+    if box_path or viewer_path:
+        hx, hy, hz = args.dims
+        shape = "cube" if hx == hy == hz else "rectangular box"
+        print(f"box half-extents     : {hx} x {hy} x {hz}  ({shape})")
     if box_path:
         print(f"box 3D preview       : {os.path.abspath(box_path)}")
     if viewer_path:
