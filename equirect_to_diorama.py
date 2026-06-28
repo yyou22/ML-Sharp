@@ -297,6 +297,13 @@ function makeWater(mat, maskTex) {
 }
 
 const loader = new THREE.TextureLoader();
+// Flat per-wall shading baked into vertex colors. MeshBasic is unlit, so without
+// this a panorama of uniform walls has no corner gradient and the planes read as
+// one flat field. We tint each wall by its inward-facing normal against a fixed
+// light (same dir as the cardboard), using a half-Lambert wrap so every wall
+// stays bright and readable while still differing enough to make the corners pop.
+// Needs no lights and looks identical in any renderer (matches the cardboard).
+const WALL_LIGHT = new THREE.Vector3(2, 4, 3).normalize();
 for (const name in FACES) {
   const c = FACES[name];
   const pos = new Float32Array([...c[0], ...c[1], ...c[2], ...c[3]]);
@@ -304,9 +311,19 @@ for (const name in FACES) {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('uv', new THREE.BufferAttribute(UV, 2));
   g.setIndex(IDX);
+  // inward normal (toward box center) from the quad's corners
+  const e1 = new THREE.Vector3(...c[1]).sub(new THREE.Vector3(...c[0]));
+  const e2 = new THREE.Vector3(...c[3]).sub(new THREE.Vector3(...c[0]));
+  const nrm = new THREE.Vector3().crossVectors(e1, e2).normalize();
+  const ctr = new THREE.Vector3();
+  for (const p of c) ctr.add(new THREE.Vector3(...p));
+  if (nrm.dot(ctr) > 0) nrm.negate();            // face center . normal > 0 => points outward
+  const sh = 0.62 + 0.38 * (0.5 + 0.5 * nrm.dot(WALL_LIGHT)); // half-Lambert, ~0.62..1.0
+  g.setAttribute('color', new THREE.BufferAttribute(
+    new Float32Array([sh,sh,sh, sh,sh,sh, sh,sh,sh, sh,sh,sh]), 3));
   const t = loader.load(TEX[name]);
   t.colorSpace = THREE.SRGBColorSpace;
-  let m = new THREE.MeshBasicMaterial({map: t, side: THREE.DoubleSide});
+  let m = new THREE.MeshBasicMaterial({map: t, vertexColors: true, side: THREE.DoubleSide});
   if (WATER.has(name)) {
     const mk = loader.load(MASK[name]);
     mk.colorSpace = THREE.NoColorSpace;
