@@ -3,3 +3,4 @@
 **.png
 **.webp
 .env
+__pycache__/

@@ -350,74 +350,82 @@ if (TH > 0) {
     scene.add(mesh);
   }
 
-  // --- corrugated cardboard edge on the open-front rim: real 3-D fluting
-  //     (a row of little arches) sandwiched between two smooth liner strips,
-  //     baked-shaded so the ridges catch light like the slabs do ---
-  const RIM_L = new THREE.Vector3(2, 4, 3).normalize();
+  // --- corrugated cardboard edge on the open-front rim.
+  //     Geometry is a flat sheet: wavy when seen from the front (z-axis),
+  //     completely planar when seen from the side (u-axis) -- like real
+  //     corrugated medium, not a round tube. Liners are flat planes too.
+  //     A dark backing behind everything reads as the hollow interior. ---
   const KRAFT = new THREE.Color(0xccb487);
   const rimMat = new THREE.MeshBasicMaterial({
     vertexColors: true, side: THREE.DoubleSide,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
-  // lambert-ish shade from a normal, same model the slabs use, times a tint
-  const litRim = (nx, ny, nz, tint) => {
-    const d = Math.max(0, nx * RIM_L.x + ny * RIM_L.y + nz * RIM_L.z);
-    const s = (0.40 + 0.60 * d) * tint;
-    return [KRAFT.r * s, KRAFT.g * s, KRAFT.b * s];
-  };
-  // build one rim band: u runs along the edge, v spans the thin thickness,
-  // flutes bulge toward +z. uAxis/vAxis are 0 (x) or 1 (y); 3rd coord is z.
   function buildRim(uMin, uMax, uAxis, vMin, vMax, vAxis) {
     const len = uMax - uMin, band = vMax - vMin;
-    const lin = band * 0.16;                      // liner strip width each side
-    const cMin = vMin + lin, cMax = vMax - lin;   // corrugation spans the middle
-    const flutes = Math.max(4, Math.round(len / 0.065));
-    const segs = flutes * 8;
-    const A = Math.min(0.028, band * 0.45);       // how far the flutes bulge out
-    const z0 = hz + 0.002;
+    const lin = band * 0.10;
+    const innerLo = vMin + lin, innerHi = vMax - lin;
+    const innerMid = (innerLo + innerHi) / 2, innerHalf = (innerHi - innerLo) / 2;
+    const amp = innerHalf * 0.88;          // wave nearly touches each liner
+    const mw  = band * 0.12;             // medium ribbon half-width (thin strip)
+    const lambda = Math.max(band * 2.4, 0.05);
+    const waves = Math.max(3, Math.round(len / lambda));
+    const segs  = waves * 14;
+    const z0 = hz + 0.003;
     const pos = [], col = [], idx = [];
-    const vert = (u, v, z, n, tint) => {
-      const p = [0, 0, 0]; p[uAxis] = u; p[vAxis] = v; p[2] = z;
-      pos.push(p[0], p[1], p[2]);
-      const c = litRim(n[0], n[1], n[2], tint); col.push(c[0], c[1], c[2]);
-      return pos.length / 3 - 1;
+    const mk = (uu, vv, zz, r, g, b) => {
+      const p = [0, 0, 0]; p[uAxis] = uu; p[vAxis] = vv; p[2] = zz;
+      pos.push(p[0], p[1], p[2]); col.push(r, g, b); return pos.length / 3 - 1;
     };
-    // corrugated middle: two rows (cMin/cMax) riding a row of arches along u
-    const dth = flutes * 2 * Math.PI / len;
+    // dark hollow backing (the black gap you see between the liners irl)
+    const zd = z0 - 0.001;
+    const d0=mk(uMin,vMin,zd, 0.04,0.03,0.02), d1=mk(uMin,vMax,zd, 0.04,0.03,0.02),
+          d2=mk(uMax,vMin,zd, 0.04,0.03,0.02), d3=mk(uMax,vMax,zd, 0.04,0.03,0.02);
+    idx.push(d0,d1,d2, d1,d3,d2);
+    // flat liner strips (bright kraft, just flat planes -- they ARE flat irl)
+    const kl = KRAFT.r*1.14, gl = KRAFT.g*1.14, bl = KRAFT.b*1.14;
+    const a0=mk(uMin,vMin,z0,kl,gl,bl),    a1=mk(uMin,innerLo,z0,kl,gl,bl),
+          a2=mk(uMax,vMin,z0,kl,gl,bl),    a3=mk(uMax,innerLo,z0,kl,gl,bl);
+    idx.push(a0,a1,a2, a1,a3,a2);
+    const a4=mk(uMin,innerHi,z0,kl,gl,bl), a5=mk(uMin,vMax,z0,kl,gl,bl),
+          a6=mk(uMax,innerHi,z0,kl,gl,bl), a7=mk(uMax,vMax,z0,kl,gl,bl);
+    idx.push(a4,a5,a6, a5,a7,a6);
+    // corrugated medium: flat sine-wave ribbon living entirely in z=z0.
+    // Wavy from the front, invisible-thin from the side -- like a cylinder.
+    // Shade by slope: crests (slope=0) are bright, steep sections are darker.
+    // per-wave irregular amplitudes and phase offsets (deterministic noise)
+    const rng = (s) => { const x = Math.sin(s*127.1+311.7)*43758.5453; return x-Math.floor(x); };
+    const wAmp = Array.from({length: waves+1}, (_,i) => amp * (0.68 + 0.50*rng(i*3)));
+    const wPhs = Array.from({length: waves+1}, (_,i) => (rng(i*7+1)-0.5)*0.28);
+    const wv = (u) => {
+      const phase = (u - uMin) / len * waves;
+      const wi = Math.min(Math.floor(phase), waves-1);
+      const t = (phase - wi + wPhs[wi]) * 2 * Math.PI;
+      const s = Math.sin(t);
+      return innerMid + wAmp[wi] * Math.sign(s) * Math.pow(Math.abs(s), 0.28);
+    };
+    const maxSlope = amp * waves * 2 * Math.PI / len;
     let pa = -1, pb = -1;
     for (let i = 0; i <= segs; i++) {
-      const u = uMin + len * (i / segs);
-      const th = (u - uMin) * dth;
-      const h = 0.5 * (1 - Math.cos(th));         // 0..1 arch height
-      const z = z0 + A * h;
-      const slope = A * 0.5 * Math.sin(th) * dth; // dz/du -> tilts the normal
-      const n = [0, 0, 0]; n[uAxis] = -slope; n[2] = 1;
-      const L = Math.hypot(n[0], n[1], n[2]); n[0] /= L; n[1] /= L; n[2] /= L;
-      const tint = 0.78 + 0.22 * h;               // crests a touch brighter
-      const a = vert(u, cMin, z, n, tint), b = vert(u, cMax, z, n, tint);
-      if (i > 0) idx.push(pa, pb, a, pb, b, a);
-      pa = a; pb = b;
+      const u = uMin + len * (i / segs), v = wv(u);
+      const du = len / segs;
+      const slope = Math.abs((wv(u + du*0.5) - wv(u - du*0.5)) / du);
+      const tint = (1.06 - 0.42 * Math.min(slope / maxSlope, 1.0));
+      const r = KRAFT.r*tint, g = KRAFT.g*tint, b = KRAFT.b*tint;
+      const a = mk(u, v - mw, z0, r, g, b), bv = mk(u, v + mw, z0, r, g, b);
+      if (i > 0) idx.push(pa, pb, a, pb, bv, a);
+      pa = a; pb = bv;
     }
-    // two smooth liner strips, flat and flush with the flute crests
-    const up = [0, 0, 1];
-    const strip = (va, vb) => {
-      const z = z0 + A;
-      const q0 = vert(uMin, va, z, up, 1.16), q1 = vert(uMin, vb, z, up, 1.16);
-      const q2 = vert(uMax, va, z, up, 1.16), q3 = vert(uMax, vb, z, up, 1.16);
-      idx.push(q0, q1, q2, q1, q3, q2);
-    };
-    strip(vMin, cMin); strip(cMax, vMax);
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setAttribute('color',    new THREE.Float32BufferAttribute(col, 3));
     g.setIndex(idx);
     const mesh = new THREE.Mesh(g, rimMat); mesh.renderOrder = 10;
     scene.add(mesh);
   }
-  buildRim(-hy - m, hy + m, 1,  hx + eps, hx + TH,  0);   // wall_left  rim
-  buildRim(-hy - m, hy + m, 1, -hx - TH, -hx - eps,  0);  // wall_right rim
-  buildRim(-hx - m, hx + m, 0,  hy + eps, hy + TH,  1);   // ceiling    rim
-  buildRim(-hx - m, hx + m, 0, -hy - TH, -hy - eps,  1);  // floor      rim
+  buildRim(-hy - m, hy + m, 1,  hx + eps, hx + TH,  0);   // wall_left  rim (owns corners)
+  buildRim(-hy - m, hy + m, 1, -hx - TH, -hx - eps,  0);  // wall_right rim (owns corners)
+  buildRim(-hx,     hx,     0,  hy + eps, hy + TH,  1);    // ceiling rim (butts to walls)
+  buildRim(-hx,     hx,     0, -hy - TH, -hy - eps,  1);   // floor   rim (butts to walls)
 }
 
 document.getElementById('reset').onclick = () => {
